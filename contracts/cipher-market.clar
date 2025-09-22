@@ -174,3 +174,133 @@
 
     (try! (execute-stx-transfer tx-sender seller seller-revenue))
     (try! (execute-stx-transfer tx-sender contract-owner platform-fee))
+
+    (map-set trading-history {
+      buyer: tx-sender,
+      asset-id: asset-id,
+    } {
+      block-height: stacks-block-height,
+      purchase-price: purchase-price,
+      seller: seller,
+    })
+
+    (let ((seller-profile (default-to {
+        total-trades: u0,
+        reputation-score: u0,
+        last-activity: u0,
+      }
+        (map-get? participant-profiles { user: seller })
+      )))
+      (map-set participant-profiles { user: seller } {
+        total-trades: (+ (get total-trades seller-profile) u1),
+        reputation-score: (get reputation-score seller-profile),
+        last-activity: stacks-block-height,
+      })
+    )
+
+    (var-set total-trading-volume (+ (var-get total-trading-volume) u1))
+    (ok true)
+  )
+)
+
+;; Access Control Functions
+
+;; Retrieve encrypted access credentials for purchased assets
+(define-public (get-access-credentials (asset-id uint))
+  (let (
+      (purchase-record (unwrap!
+        (map-get? trading-history {
+          buyer: tx-sender,
+          asset-id: asset-id,
+        })
+        ERR_UNAUTHORIZED
+      ))
+      (credentials (unwrap! (map-get? access-credentials { asset-id: asset-id })
+        ERR_ASSET_UNAVAILABLE
+      ))
+    )
+    (asserts! (< asset-id (var-get next-asset-id)) ERR_INVALID_INPUT)
+    (ok (get encrypted-token credentials))
+  )
+)
+
+;; Asset Management Functions
+
+;; Update asset pricing for existing listings
+(define-public (update-asset-price
+    (asset-id uint)
+    (new-price uint)
+  )
+  (let ((asset-data (unwrap! (map-get? digital-assets { asset-id: asset-id })
+      ERR_ASSET_UNAVAILABLE
+    )))
+    (asserts! (< asset-id (var-get next-asset-id)) ERR_INVALID_INPUT)
+    (asserts! (is-eq (get creator asset-data) tx-sender) ERR_UNAUTHORIZED)
+    (asserts! (> new-price u0) ERR_INVALID_PRICE)
+
+    (map-set digital-assets { asset-id: asset-id }
+      (merge asset-data { price-stx: new-price })
+    )
+    (ok true)
+  )
+)
+
+;; Remove asset from marketplace
+(define-public (remove-asset-listing (asset-id uint))
+  (let ((asset-data (unwrap! (map-get? digital-assets { asset-id: asset-id })
+      ERR_ASSET_UNAVAILABLE
+    )))
+    (asserts! (< asset-id (var-get next-asset-id)) ERR_INVALID_INPUT)
+    (asserts! (is-eq (get creator asset-data) tx-sender) ERR_UNAUTHORIZED)
+
+    (map-set digital-assets { asset-id: asset-id }
+      (merge asset-data { available: false })
+    )
+    (ok true)
+  )
+)
+
+;; Protocol Administration Functions
+
+;; Adjust platform fee structure
+(define-public (update-platform-fee (new-fee-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) ERR_UNAUTHORIZED)
+    (asserts! (<= new-fee-rate u100) ERR_INVALID_PRICE)
+    (var-set platform-fee-rate new-fee-rate)
+    (ok true)
+  )
+)
+
+;; Read-Only Query Functions
+
+;; Retrieve comprehensive asset information
+(define-read-only (get-asset-details (asset-id uint))
+  (map-get? digital-assets { asset-id: asset-id })
+)
+
+;; Query participant trading statistics
+(define-read-only (get-participant-stats (user principal))
+  (map-get? participant-profiles { user: user })
+)
+
+;; Get platform trading metrics
+(define-read-only (get-platform-volume)
+  (var-get total-trading-volume)
+)
+
+;; Query current platform fee rate
+(define-read-only (get-fee-structure)
+  (var-get platform-fee-rate)
+)
+
+;; Verify asset ownership history
+(define-read-only (get-purchase-record
+    (buyer principal)
+    (asset-id uint)
+  )
+  (map-get? trading-history {
+    buyer: buyer,
+    asset-id: asset-id,
+  })
+)
